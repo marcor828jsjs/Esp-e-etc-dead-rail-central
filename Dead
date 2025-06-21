@@ -1,0 +1,668 @@
+-- Script ESP completo integrado com BondCounterGui fornecido, adicionando NPCs cavalos personalizados,
+-- exibindo health de jogadores com precisão e ocultando o nome padrão de Roblox.
+-- Funciona no executor Delta Mobile para Dead Rails
+-- Recursos:
+--  • Remove GUIs e BillboardGuis anteriores ao iniciar para evitar duplicatas
+--  • ESP Bonds: bolinha roxa, visível até 2000 studs; contador de Bonds coletados usando o GUI original fornecido
+--  • ESP Loot RuntimeItems: texto flutuante pequeno sem fundo, visível até 2000 studs, um label por modelo
+--  • ESP NPCs (“Unicórnio”, “Capitão”, “Banqueiro”, cavalos variados): texto flutuante pequeno acima de HumanoidRootPart enquanto vivos (exceto cavalos que mantêm ESP mesmo mortos), um label por NPC, evitando duplicações; cores específicas
+--  • ESP Jogadores: nome do jogador flutuante e health atual abaixo, com precisão decimal (ex.: “75.3”), visível até 5000 studs, um label por jogador; reaparece ao respawn; oculta nome padrão de Roblox
+--  • HUD: botão emoji 😀 no canto; ao clicar mostra/esconde lista com toggles On/Off, em ScrollingFrame arrastável
+--  • Contador de Bonds coletados reutiliza exatamente o GUI e estilo que você enviou
+--  • Emoji posicionado um pouco mais abaixo para não conflitar com o contador
+--  • Inclui “Pote de Cérebro”, “Óleo de Serpente” sem duplicação, “Capacete” para Head_Armor, etc.
+--  • Adiciona NPCs cavalos: Model_WarHorse → "Cavalo Fogo" (vermelho), Model_FamineHorse → "Cavalo Raio" (azul), Model_DeathHorse → "Cavalo Vida" (ciano), Model_PestilenceHorse → "Cavalo Zumbi" (verde)
+
+-- ===== LIMPEZA DE VERSÕES ANTIGAS =====
+for _, gui in ipairs(game.CoreGui:GetChildren()) do
+    if gui.Name == "ESPControlGui" or gui.Name == "BondCounterGui" then
+        gui:Destroy()
+    end
+end
+for _, inst in ipairs(game.CoreGui:GetDescendants()) do
+    if inst:IsA("BillboardGui") and (
+        inst.Name == "ESP_Label" or inst.Name == "ESP_Bond" or inst.Name == "ESP_Player"
+    ) then
+        inst:Destroy()
+    end
+end
+
+-- ===== VARIÁVEIS GLOBAIS E CONFIGURAÇÕES =====
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then return end
+
+-- Mapeamento de nomes originais para exibição em português, incluindo cavalos
+local nameMap = {
+    ["Snake Oil"]             = "Óleo de Serpente",
+    ["Coal"]                  = "Carvão",
+    ["Bandage"]               = "Curativo",
+    ["Pickaxe"]               = "Picareta",
+    ["Right Arm_Armor"]       = "Armadura Braço Direito",
+    ["Left Arm_Armor"]        = "Armadura Braço Esquerdo",
+    ["Torso_Armor"]           = "armadura peitoral",
+    ["Head_Armor"]            = "Capacete",
+    ["SheetMetal"]            = "Chapa",
+    ["SupplyDepotKey"]        = "Chave",
+    ["Model_CaptainPrescott"] = "Capitão",
+    ["BankCombo"]             = "Senha do Cofre",
+    ["Dynamite"]              = "Dinamite",
+    ["Model_Banker"]          = "Banqueiro",
+    ["GoldBar"]               = "Ouro",
+    ["Model_Unicorn"]         = "Unicórnio",
+    ["Model_WarHorse"]        = "Cavalo Fogo",
+    ["Model_FamineHorse"]     = "Cavalo Raio",
+    ["Model_DeathHorse"]      = "Cavalo Vida",
+    ["Model_PestilenceHorse"] = "Cavalo Zumbi",
+    ["Bond"]                  = "Bond",
+    ["BrainJar"]              = "Pote de Cérebro",
+}
+
+-- Alcances
+local MAX_DISTANCE = 2000         -- itens/NPCs
+local PLAYER_ESP_DISTANCE = 5000  -- jogadores
+
+-- Tables de tracking
+-- trackedEntries[modelInstance] = { model, part, label, name, type="Bond"/"Loot"/"NPC", humanoid, color }
+local trackedEntries = {}
+-- trackedPlayers[player] = { gui = BillboardGui, nameLabel = TextLabel, healthLabel = TextLabel }
+local trackedPlayers = {}
+
+-- Contador de Bonds coletados
+local bondsCollected = 0
+
+-- Configurações de ESP por nome em português => true/false
+-- Inclui "Jogadores" para ESP de jogadores
+local settings = {}
+do
+    local seen = {}
+    for _, ptName in pairs(nameMap) do
+        if not seen[ptName] then
+            settings[ptName] = true
+            seen[ptName] = true
+        end
+    end
+    settings["Jogadores"] = true
+end
+
+-- ===== BondCounterGui conforme script fornecido =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BondCounterGui"
+screenGui.Parent = game.CoreGui
+
+local counterLabel = Instance.new("TextLabel")
+counterLabel.Size = UDim2.new(0, 150, 0, 30)
+counterLabel.Position = UDim2.new(1, -160, 0, 40) -- um pouco mais abaixo
+counterLabel.BackgroundTransparency = 0.5
+counterLabel.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+counterLabel.TextColor3 = Color3.new(1, 1, 1)
+counterLabel.TextSize = 14
+counterLabel.Font = Enum.Font.SourceSansBold
+counterLabel.Text = "Bonds Pegos: 0"
+counterLabel.Parent = screenGui
+
+-- ===== FUNÇÕES AUXILIARES =====
+local function findPartForModel(model)
+    if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
+        return model.PrimaryPart
+    end
+    for _, desc in ipairs(model:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            return desc
+        end
+    end
+    return nil
+end
+
+-- ===== CRIAÇÃO DE ESP =====
+local function createBondDot(part)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_Bond"
+    billboard.Adornee = part
+    billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.new(0, 10, 0, 10)
+    billboard.StudsOffset = Vector3.new(0, 2, 0)
+    billboard.Parent = game.CoreGui
+    billboard.SizeOffset = Vector2.new(0, 0)
+    billboard.MaxDistance = 0
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(128, 0, 255)
+    frame.BackgroundTransparency = 0
+    frame.BorderSizePixel = 0
+    frame.Parent = billboard
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = frame
+    return billboard
+end
+
+local function createTextLabel(part, text, color)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_Label"
+    billboard.Adornee = part
+    billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.new(0, 100, 0, 20)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.Parent = game.CoreGui
+    billboard.SizeOffset = Vector2.new(0, 0)
+    billboard.MaxDistance = 0
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = color or Color3.fromRGB(220, 220, 220)
+    label.TextStrokeTransparency = 0.7
+    label.TextScaled = false
+    label.Font = Enum.Font.SourceSans
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Parent = billboard
+    return billboard
+end
+
+local function createPlayerLabel(part, playerName)
+    -- BillboardGui com duas linhas: nome e health
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_Player"
+    billboard.Adornee = part
+    billboard.AlwaysOnTop = true
+    billboard.Size = UDim2.new(0, 100, 0, 30)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.Parent = game.CoreGui
+    billboard.SizeOffset = Vector2.new(0, 0)
+    billboard.MaxDistance = 0
+
+    -- Nome
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "NameLabel"
+    nameLabel.Size = UDim2.new(1, 0, 0, 16)
+    nameLabel.Position = UDim2.new(0, 0, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = playerName
+    nameLabel.TextColor3 = Color3.fromRGB(255, 20, 147) -- rosa shock
+    nameLabel.TextStrokeTransparency = 0.7
+    nameLabel.TextScaled = false
+    nameLabel.Font = Enum.Font.SourceSansBold
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+    nameLabel.Parent = billboard
+
+    -- Health
+    local healthLabel = Instance.new("TextLabel")
+    healthLabel.Name = "HealthLabel"
+    healthLabel.Size = UDim2.new(1, 0, 0, 14)
+    healthLabel.Position = UDim2.new(0, 0, 0, 16)
+    healthLabel.BackgroundTransparency = 1
+    healthLabel.Text = ""
+    healthLabel.TextColor3 = Color3.fromRGB(255, 20, 147)
+    healthLabel.TextStrokeTransparency = 0.7
+    healthLabel.TextScaled = false
+    healthLabel.Font = Enum.Font.SourceSans
+    healthLabel.TextSize = 12
+    healthLabel.TextXAlignment = Enum.TextXAlignment.Center
+    healthLabel.Parent = billboard
+
+    return billboard, nameLabel, healthLabel
+end
+
+-- ===== TRACKING DE ITENS E NPCS =====
+local function tryTrackRuntimeModel(model)
+    if not model.Parent or not model.Parent:IsA("Instance") then return end
+    if model.Parent.Name == "RuntimeItems" then
+        local engName = model.Name
+        local ptName = nameMap[engName]
+        if ptName then
+            if trackedEntries[model] then return end
+            local part = findPartForModel(model)
+            if part then
+                local typ = (engName == "Bond") and "Bond" or "Loot"
+                trackedEntries[model] = {
+                    model = model,
+                    part = part,
+                    label = nil,
+                    name = ptName,
+                    type = typ,
+                    humanoid = nil,
+                    color = nil,
+                }
+                if typ == "Bond" then
+                    model.AncestryChanged:Connect(function(child, parent)
+                        if not model.Parent then
+                            bondsCollected = bondsCollected + 1
+                            counterLabel.Text = "Bonds Pegos: " .. bondsCollected
+                            local entry = trackedEntries[model]
+                            if entry and entry.label then
+                                entry.label:Destroy()
+                            end
+                            trackedEntries[model] = nil
+                        end
+                    end)
+                end
+            end
+        end
+    end
+end
+
+local function isHorseModelName(name)
+    return name == "Model_WarHorse"
+        or name == "Model_FamineHorse"
+        or name == "Model_DeathHorse"
+        or name == "Model_PestilenceHorse"
+end
+
+local function tryTrackNPCModel(model)
+    local name = model.Name
+    if name == "Model_Unicorn" or name == "Model_CaptainPrescott" or name == "Model_Banker"
+       or isHorseModelName(name) then
+        local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+        local part = model:FindFirstChild("HumanoidRootPart") or findPartForModel(model)
+        if part then
+            local ptName = nameMap[name]
+            if ptName then
+                if trackedEntries[model] then
+                    trackedEntries[model].humanoid = humanoid
+                    return
+                end
+                local color
+                if name == "Model_Unicorn" then
+                    color = Color3.fromRGB(128, 0, 255) -- roxa
+                elseif name == "Model_WarHorse" then
+                    color = Color3.fromRGB(255, 0, 0)   -- vermelho
+                elseif name == "Model_FamineHorse" then
+                    color = Color3.fromRGB(0, 0, 255)   -- azul
+                elseif name == "Model_DeathHorse" then
+                    color = Color3.fromRGB(0, 255, 255) -- ciano
+                elseif name == "Model_PestilenceHorse" then
+                    color = Color3.fromRGB(0, 255, 0)   -- verde
+                else
+                    color = Color3.fromRGB(220, 220, 220)
+                end
+                trackedEntries[model] = {
+                    model = model,
+                    part = part,
+                    label = nil,
+                    name = ptName,
+                    type = "NPC",
+                    humanoid = humanoid,
+                    color = color,
+                }
+                -- Conectar Died somente para NPCs que não são cavalos
+                if humanoid and not isHorseModelName(name) then
+                    humanoid.Died:Connect(function()
+                        local entry = trackedEntries[model]
+                        if entry and entry.label then
+                            entry.label:Destroy()
+                        end
+                        trackedEntries[model] = nil
+                    end)
+                end
+            end
+        end
+    end
+end
+
+for _, obj in ipairs(workspace:GetDescendants()) do
+    if obj:IsA("Model") then
+        tryTrackRuntimeModel(obj)
+        tryTrackNPCModel(obj)
+    end
+end
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("Model") then
+        tryTrackRuntimeModel(obj)
+        tryTrackNPCModel(obj)
+    end
+end)
+workspace.DescendantRemoving:Connect(function(obj)
+    if obj:IsA("Model") and trackedEntries[obj] then
+        local entry = trackedEntries[obj]
+        if entry.label then
+            entry.label:Destroy()
+        end
+        trackedEntries[obj] = nil
+    end
+end)
+
+-- ===== ESP DE JOGADORES =====
+local function hideDefaultName(player)
+    -- Oculta nome padrão de Roblox configurando DisplayDistanceType
+    local function onCharacterAdded(char)
+        local humanoid = char:FindFirstChildWhichIsA("Humanoid")
+        if humanoid and humanoid.DisplayDistanceType then
+            humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        end
+    end
+    if player.Character then
+        onCharacterAdded(player.Character)
+    end
+    player.CharacterAdded:Connect(onCharacterAdded)
+end
+
+-- Aplica para todos jogadores exceto LocalPlayer
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        hideDefaultName(player)
+    end
+end
+Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then
+        hideDefaultName(player)
+    end
+end)
+
+local function updatePlayerESP()
+    local character = LocalPlayer.Character
+    if not character or not character.PrimaryPart then return end
+    local rootPos = character.PrimaryPart.Position
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if char and char.PrimaryPart then
+                local dist = (char.PrimaryPart.Position - rootPos).Magnitude
+                if dist <= PLAYER_ESP_DISTANCE and settings["Jogadores"] then
+                    if not trackedPlayers[player] then
+                        local gui, nameLbl, healthLbl = createPlayerLabel(char.PrimaryPart, player.Name)
+                        trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl }
+                    end
+                    -- Atualiza health com precisão decimal (ex.: 75.3)
+                    local entry = trackedPlayers[player]
+                    if entry and entry.healthLabel then
+                        local hum = char:FindFirstChildWhichIsA("Humanoid")
+                        if hum then
+                            entry.healthLabel.Text = string.format("%.1f", hum.Health)
+                        else
+                            entry.healthLabel.Text = ""
+                        end
+                    end
+                else
+                    if trackedPlayers[player] then
+                        if trackedPlayers[player].gui then
+                            trackedPlayers[player].gui:Destroy()
+                        end
+                        trackedPlayers[player] = nil
+                    end
+                end
+            else
+                if trackedPlayers[player] then
+                    if trackedPlayers[player].gui then
+                        trackedPlayers[player].gui:Destroy()
+                    end
+                    trackedPlayers[player] = nil
+                end
+            end
+        end
+    end
+end
+
+Players.PlayerRemoving:Connect(function(player)
+    if trackedPlayers[player] then
+        if trackedPlayers[player].gui then
+            trackedPlayers[player].gui:Destroy()
+        end
+        trackedPlayers[player] = nil
+    end
+end)
+Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then
+        hideDefaultName(player)
+        player.CharacterAdded:Connect(function()
+            if trackedPlayers[player] then
+                if trackedPlayers[player].gui then
+                    trackedPlayers[player].gui:Destroy()
+                end
+                trackedPlayers[player] = nil
+            end
+        end)
+    end
+end)
+
+-- ===== CRIAÇÃO DA UI: EMOJI E HUD =====
+local controlGui = Instance.new("ScreenGui")
+controlGui.Name = "ESPControlGui"
+controlGui.Parent = game.CoreGui
+
+local emojiButton = Instance.new("TextButton")
+emojiButton.Name = "EmojiButton"
+emojiButton.Size = UDim2.new(0, 36, 0, 36)
+emojiButton.Position = UDim2.new(1, -46, 0, 80)  -- um pouco mais abaixo
+emojiButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+emojiButton.BackgroundTransparency = 0.2
+emojiButton.BorderSizePixel = 0
+emojiButton.Text = "😀"
+emojiButton.Font = Enum.Font.SourceSansBold
+emojiButton.TextSize = 24
+emojiButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+emojiButton.AutoButtonColor = true
+emojiButton.Parent = controlGui
+local emojiCorner = Instance.new("UICorner")
+emojiCorner.CornerRadius = UDim.new(0, 8)
+emojiCorner.Parent = emojiButton
+
+local hudFrame = Instance.new("Frame")
+hudFrame.Name = "ESPHud"
+hudFrame.Size = UDim2.new(0, 180, 0, 200)
+hudFrame.Position = UDim2.new(1, -200, 0, 120)
+hudFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+hudFrame.BackgroundTransparency = 0.3
+hudFrame.BorderSizePixel = 0
+hudFrame.Visible = false
+hudFrame.Parent = controlGui
+local hudCorner = Instance.new("UICorner")
+hudCorner.CornerRadius = UDim.new(0, 8)
+hudCorner.Parent = hudFrame
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Name = "Scroll"
+scroll.Size = UDim2.new(1, -8, 1, -8)
+scroll.Position = UDim2.new(0, 4, 0, 4)
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.ScrollBarThickness = 6
+scroll.BackgroundTransparency = 1
+scroll.Parent = hudFrame
+
+local uiNames = {}
+do
+    for _, ptName in pairs(nameMap) do
+        if not table.find(uiNames, ptName) then
+            table.insert(uiNames, ptName)
+        end
+    end
+    table.insert(uiNames, "Jogadores")
+    table.sort(uiNames)
+end
+
+local startY = 0
+for _, ptName in ipairs(uiNames) do
+    local lineHeight = 24
+    local lineFrame = Instance.new("Frame")
+    lineFrame.Size = UDim2.new(1, 0, 0, lineHeight)
+    lineFrame.Position = UDim2.new(0, 0, 0, startY)
+    lineFrame.BackgroundTransparency = 1
+    lineFrame.Parent = scroll
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
+    nameLabel.Position = UDim2.new(0, 0, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = ptName
+    nameLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    nameLabel.Font = Enum.Font.SourceSans
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Parent = lineFrame
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 50, 0, 20)
+    btn.Position = UDim2.new(1, -50, 0, 2)
+    btn.BackgroundColor3 = settings[ptName] and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
+    btn.BackgroundTransparency = 0.2
+    btn.BorderSizePixel = 0
+    btn.Text = settings[ptName] and "ON" or "OFF"
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 14
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Parent = lineFrame
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 6)
+    btnCorner.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        settings[ptName] = not settings[ptName]
+        if settings[ptName] then
+            btn.Text = "ON"
+            btn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+        else
+            btn.Text = "OFF"
+            btn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+            if ptName == "Jogadores" then
+                for ply, data in pairs(trackedPlayers) do
+                    if data.gui then
+                        data.gui:Destroy()
+                    end
+                end
+                trackedPlayers = {}
+            else
+                for _, entry in pairs(trackedEntries) do
+                    if entry.name == ptName and entry.label then
+                        entry.label:Destroy()
+                        entry.label = nil
+                    end
+                end
+            end
+        end
+    end)
+
+    startY = startY + lineHeight + 4
+end
+scroll.CanvasSize = UDim2.new(0, 0, 0, startY + 4)
+
+emojiButton.MouseButton1Click:Connect(function()
+    hudFrame.Visible = not hudFrame.Visible
+end)
+
+do
+    local dragging = false
+    local dragStartPos, frameStartPos
+    hudFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStartPos = Vector2.new(input.Position.X, input.Position.Y)
+            frameStartPos = Vector2.new(hudFrame.Position.X.Offset, hudFrame.Position.Y.Offset)
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    hudFrame.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStartPos
+            hudFrame.Position = UDim2.new(0, frameStartPos.X + delta.X, 0, frameStartPos.Y + delta.Y)
+        end
+    end)
+end
+
+-- ===== LOOP PRINCIPAL: Atualização ESP =====
+RunService.Heartbeat:Connect(function()
+    local character = LocalPlayer.Character
+    if not character or not character.PrimaryPart then return end
+    local rootPos = character.PrimaryPart.Position
+    for model, entry in pairs(trackedEntries) do
+        if entry.type == "Loot" or entry.type == "Bond" then
+            if not entry.model.Parent then
+                if entry.label then
+                    entry.label:Destroy()
+                end
+                trackedEntries[model] = nil
+            else
+                local part = entry.part
+                local dist = (part.Position - rootPos).Magnitude
+                if dist <= MAX_DISTANCE and settings[entry.name] then
+                    if not entry.label then
+                        if entry.type == "Bond" then
+                            entry.label = createBondDot(part)
+                        else
+                            entry.label = createTextLabel(part, entry.name, nil)
+                        end
+                    end
+                else
+                    if entry.label then
+                        entry.label:Destroy()
+                        entry.label = nil
+                    end
+                end
+            end
+        elseif entry.type == "NPC" then
+            local humanoid = entry.humanoid
+            -- Para cavalos, mantém ESP mesmo morto; para outros NPCs, remove quando morto
+            local isHorse = false
+            if entry.model and entry.model.Name then
+                isHorse = isHorseModelName(entry.model.Name)
+            end
+            if not entry.model.Parent or (humanoid and humanoid.Health <= 0 and not isHorse) then
+                if entry.label then
+                    entry.label:Destroy()
+                end
+                trackedEntries[model] = nil
+            else
+                local part = entry.part
+                local dist = (part.Position - rootPos).Magnitude
+                if dist <= MAX_DISTANCE and settings[entry.name] then
+                    if not entry.label then
+                        entry.label = createTextLabel(part, entry.name, entry.color)
+                    end
+                else
+                    if entry.label then
+                        entry.label:Destroy()
+                        entry.label = nil
+                    end
+                end
+            end
+        end
+    end
+
+    -- Atualiza ESP de jogadores e health
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if char and char.PrimaryPart then
+                local dist = (char.PrimaryPart.Position - rootPos).Magnitude
+                if dist <= PLAYER_ESP_DISTANCE and settings["Jogadores"] then
+                    if not trackedPlayers[player] then
+                        local gui, nameLbl, healthLbl = createPlayerLabel(char.PrimaryPart, player.Name)
+                        trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl }
+                    end
+                    -- Atualiza health com precisão decimal (ex.: 75.3)
+                    local entry = trackedPlayers[player]
+                    if entry and entry.healthLabel then
+                        local hum = char:FindFirstChildWhichIsA("Humanoid")
+                        if hum then
+                            entry.healthLabel.Text = string.format("%.1f", hum.Health)
+                        else
+                            entry.healthLabel.Text = ""
+                        end
+                    end
+                else
+                    if trackedPlayers[player] then
+                        if trackedPlayers[player].gui then
+                            trackedPlayers[player].gui:Destroy()
+                        end
+                        trackedPlayers[player] = nil
+                    end
+                end
+            else
+                if trackedPlayers[player] then
+                    if trackedPlayers[player].gui then
+                        trackedPlayers[player].gui:Destroy()
+                    end
+                    trackedPlayers[player] = nil
+                end
+            end
+        end
+    end
+end)
+
+-- ===== FIM DO SCRIPT =====
