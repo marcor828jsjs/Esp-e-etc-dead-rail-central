@@ -1,5 +1,6 @@
 -- Script ESP completo integrado com BondCounterGui fornecido, adicionando NPCs cavalos personalizados,
--- exibindo health de jogadores com precisão decimal, ocultando o nome padrão de Roblox e incluindo ESP para "Unicorn" além de "Model_Unicorn"
+-- exibindo health de jogadores com precisão e ocultando o nome padrão de Roblox.
+-- Ajustado contador de Bonds: só conta se estiver dentro de 10 studs quando o Bond for realmente removido.
 -- Funciona no executor Delta Mobile para Dead Rails
 
 -- ===== LIMPEZA DE VERSÕES ANTIGAS =====
@@ -22,7 +23,7 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then return end
 
--- Mapeamento de nomes originais para exibição em português, incluindo cavalos e Unicórnio (Model_Unicorn e Unicorn)
+-- Mapeamento de nomes originais para exibição em português, incluindo cavalos e "Unicorn"
 local nameMap = {
     ["Snake Oil"]             = "Óleo de Serpente",
     ["Coal"]                  = "Carvão",
@@ -35,14 +36,12 @@ local nameMap = {
     ["SheetMetal"]            = "Chapa",
     ["SupplyDepotKey"]        = "Chave",
     ["Model_CaptainPrescott"] = "Capitão",
-    ["CaptainPrescott"]       = "Capitão",       -- se existir modelo sem prefixo
     ["BankCombo"]             = "Senha do Cofre",
     ["Dynamite"]              = "Dinamite",
     ["Model_Banker"]          = "Banqueiro",
-    ["Banker"]                = "Banqueiro",     -- caso exista sem prefixo
     ["GoldBar"]               = "Ouro",
     ["Model_Unicorn"]         = "Unicórnio",
-    ["Unicorn"]               = "Unicórnio",     -- inclusão para Workspace.Unicorn
+    ["Unicorn"]               = "Unicórnio",  -- também rastreia modelos nomeados apenas "Unicorn"
     ["Model_WarHorse"]        = "Cavalo Fogo",
     ["Model_FamineHorse"]     = "Cavalo Raio",
     ["Model_DeathHorse"]      = "Cavalo Vida",
@@ -56,15 +55,20 @@ local MAX_DISTANCE = 2000         -- itens/NPCs
 local PLAYER_ESP_DISTANCE = 5000  -- jogadores
 
 -- Tables de tracking
--- trackedEntries[modelInstance] = { model, part, label, name, type="Bond"/"Loot"/"NPC", humanoid, color }
+-- trackedEntries[modelInstance] = {
+--     model, part, label, name, type="Bond"/"Loot"/"NPC", humanoid, color,
+--     -- apenas para Bonds:
+--     wasNear = boolean flag indicando se esteve dentro de 10 studs antes de remoção
+-- }
 local trackedEntries = {}
--- trackedPlayers[player] = { gui = BillboardGui, nameLabel = TextLabel, healthLabel = TextLabel, lastPart = Instance }
+-- trackedPlayers[player] = { gui = BillboardGui, nameLabel = TextLabel, healthLabel = TextLabel }
 local trackedPlayers = {}
 
 -- Contador de Bonds coletados
 local bondsCollected = 0
 
 -- Configurações de ESP por nome em português => true/false
+-- Inclui "Jogadores" para ESP de jogadores
 local settings = {}
 do
     local seen = {}
@@ -84,7 +88,7 @@ screenGui.Parent = game.CoreGui
 
 local counterLabel = Instance.new("TextLabel")
 counterLabel.Size = UDim2.new(0, 150, 0, 30)
-counterLabel.Position = UDim2.new(1, -160, 0, 40) -- abaixo do topo
+counterLabel.Position = UDim2.new(1, -160, 0, 40) -- um pouco mais abaixo
 counterLabel.BackgroundTransparency = 0.5
 counterLabel.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
 counterLabel.TextColor3 = Color3.new(1, 1, 1)
@@ -104,6 +108,13 @@ local function findPartForModel(model)
         end
     end
     return nil
+end
+
+local function isHorseModelName(name)
+    return name == "Model_WarHorse"
+        or name == "Model_FamineHorse"
+        or name == "Model_DeathHorse"
+        or name == "Model_PestilenceHorse"
 end
 
 -- ===== CRIAÇÃO DE ESP =====
@@ -154,7 +165,7 @@ local function createTextLabel(part, text, color)
 end
 
 local function createPlayerLabel(part, playerName)
-    -- BillboardGui com nome e health
+    -- BillboardGui com duas linhas: nome e health
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "ESP_Player"
     billboard.Adornee = part
@@ -180,7 +191,7 @@ local function createPlayerLabel(part, playerName)
     nameLabel.TextXAlignment = Enum.TextXAlignment.Center
     nameLabel.Parent = billboard
 
-    -- Health abaixo com precisão decimal
+    -- Health
     local healthLabel = Instance.new("TextLabel")
     healthLabel.Name = "HealthLabel"
     healthLabel.Size = UDim2.new(1, 0, 0, 14)
@@ -217,13 +228,17 @@ local function tryTrackRuntimeModel(model)
                     type = typ,
                     humanoid = nil,
                     color = nil,
+                    wasNear = false, -- flag para contador de Bonds
                 }
                 if typ == "Bond" then
+                    -- Ao remover, só conta se wasNear == true
                     model.AncestryChanged:Connect(function(child, parent)
                         if not model.Parent then
-                            bondsCollected = bondsCollected + 1
-                            counterLabel.Text = "Bonds Pegos: " .. bondsCollected
                             local entry = trackedEntries[model]
+                            if entry and entry.wasNear then
+                                bondsCollected = bondsCollected + 1
+                                counterLabel.Text = "Bonds Pegos: " .. bondsCollected
+                            end
                             if entry and entry.label then
                                 entry.label:Destroy()
                             end
@@ -236,18 +251,10 @@ local function tryTrackRuntimeModel(model)
     end
 end
 
-local function isHorseModelName(name)
-    return name == "Model_WarHorse"
-        or name == "Model_FamineHorse"
-        or name == "Model_DeathHorse"
-        or name == "Model_PestilenceHorse"
-end
-
 local function tryTrackNPCModel(model)
     local name = model.Name
     if name == "Model_Unicorn" or name == "Unicorn"
-       or name == "Model_CaptainPrescott" or name == "CaptainPrescott"
-       or name == "Model_Banker" or name == "Banker"
+       or name == "Model_CaptainPrescott" or name == "Model_Banker"
        or isHorseModelName(name) then
         local humanoid = model:FindFirstChildWhichIsA("Humanoid")
         local part = model:FindFirstChild("HumanoidRootPart") or findPartForModel(model)
@@ -255,20 +262,21 @@ local function tryTrackNPCModel(model)
             local ptName = nameMap[name]
             if ptName then
                 if trackedEntries[model] then
+                    -- já trackeado antes, atualiza humanoid
                     trackedEntries[model].humanoid = humanoid
                     return
                 end
                 local color
                 if name == "Model_Unicorn" or name == "Unicorn" then
-                    color = Color3.fromRGB(200, 100, 255) -- púrpura clara para Unicórnio, distinto do bond
+                    color = Color3.fromRGB(128, 0, 255) -- roxa/púrpura
                 elseif name == "Model_WarHorse" then
-                    color = Color3.fromRGB(255, 0, 0)
+                    color = Color3.fromRGB(255, 0, 0)   -- vermelho
                 elseif name == "Model_FamineHorse" then
-                    color = Color3.fromRGB(0, 0, 255)
+                    color = Color3.fromRGB(0, 0, 255)   -- azul
                 elseif name == "Model_DeathHorse" then
-                    color = Color3.fromRGB(0, 255, 255)
+                    color = Color3.fromRGB(0, 255, 255) -- ciano
                 elseif name == "Model_PestilenceHorse" then
-                    color = Color3.fromRGB(0, 255, 0)
+                    color = Color3.fromRGB(0, 255, 0)   -- verde
                 else
                     color = Color3.fromRGB(220, 220, 220)
                 end
@@ -280,9 +288,10 @@ local function tryTrackNPCModel(model)
                     type = "NPC",
                     humanoid = humanoid,
                     color = color,
+                    wasNear = false, -- não usado para NPC
                 }
-                -- Para NPCs que não são cavalos, remove no Died
-                if humanoid and not isHorseModelName(name) and name ~= "Model_Unicorn" and name ~= "Unicorn" then
+                -- Para NPCs que não são cavalos, conecte Died para remover ESP quando morrer
+                if humanoid and not (isHorseModelName(name) or name == "Model_Unicorn" or name == "Unicorn") then
                     humanoid.Died:Connect(function()
                         local entry = trackedEntries[model]
                         if entry and entry.label then
@@ -296,23 +305,25 @@ local function tryTrackNPCModel(model)
     end
 end
 
--- Inicial scan
+-- Varre modelos já existentes
 for _, obj in ipairs(workspace:GetDescendants()) do
     if obj:IsA("Model") then
         tryTrackRuntimeModel(obj)
         tryTrackNPCModel(obj)
     end
 end
+-- Novos modelos surgindo
 workspace.DescendantAdded:Connect(function(obj)
     if obj:IsA("Model") then
         tryTrackRuntimeModel(obj)
         tryTrackNPCModel(obj)
     end
 end)
+-- Quando modelo some, limpeza
 workspace.DescendantRemoving:Connect(function(obj)
     if obj:IsA("Model") and trackedEntries[obj] then
-        local entry = trackedEntries[model]
-        if entry and entry.label then
+        local entry = trackedEntries[obj]
+        if entry.label then
             entry.label:Destroy()
         end
         trackedEntries[obj] = nil
@@ -321,20 +332,28 @@ end)
 
 -- ===== ESP DE JOGADORES =====
 local function hideDefaultName(player)
+    -- Oculta nome padrão de Roblox configurando DisplayDistanceType
     local function onCharacterAdded(char)
         local humanoid = char:FindFirstChildWhichIsA("Humanoid")
         if humanoid and humanoid.DisplayDistanceType then
             humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
         end
     end
-    if player.Character then onCharacterAdded(player.Character) end
+    if player.Character then
+        onCharacterAdded(player.Character)
+    end
     player.CharacterAdded:Connect(onCharacterAdded)
 end
+
 for _, player in ipairs(Players:GetPlayers()) do
-    if player ~= LocalPlayer then hideDefaultName(player) end
+    if player ~= LocalPlayer then
+        hideDefaultName(player)
+    end
 end
 Players.PlayerAdded:Connect(function(player)
-    if player ~= LocalPlayer then hideDefaultName(player) end
+    if player ~= LocalPlayer then
+        hideDefaultName(player)
+    end
 end)
 
 local function updatePlayerESP()
@@ -347,22 +366,16 @@ local function updatePlayerESP()
             if char and char.PrimaryPart then
                 local dist = (char.PrimaryPart.Position - rootPos).Magnitude
                 if dist <= PLAYER_ESP_DISTANCE and settings["Jogadores"] then
-                    local existing = trackedPlayers[player]
-                    -- Se adornee mudou (revive sem CharacterAdded), recria
-                    if existing and existing.lastPart ~= char.PrimaryPart then
-                        if existing.gui then existing.gui:Destroy() end
-                        existing = nil
-                        trackedPlayers[player] = nil
-                    end
-                    if not existing then
+                    if not trackedPlayers[player] then
                         local gui, nameLbl, healthLbl = createPlayerLabel(char.PrimaryPart, player.Name)
-                        trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl, lastPart = char.PrimaryPart }
+                        trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl }
                     end
-                    -- Atualiza health com precisão decimal
+                    -- Atualiza health com precisão decimal (ex.: 75.3)
                     local entry = trackedPlayers[player]
                     if entry and entry.healthLabel then
                         local hum = char:FindFirstChildWhichIsA("Humanoid")
                         if hum then
+                            -- Use Health diretamente, sem arredondar para inteiro
                             entry.healthLabel.Text = string.format("%.1f", hum.Health)
                         else
                             entry.healthLabel.Text = ""
@@ -370,13 +383,17 @@ local function updatePlayerESP()
                     end
                 else
                     if trackedPlayers[player] then
-                        if trackedPlayers[player].gui then trackedPlayers[player].gui:Destroy() end
+                        if trackedPlayers[player].gui then
+                            trackedPlayers[player].gui:Destroy()
+                        end
                         trackedPlayers[player] = nil
                     end
                 end
             else
                 if trackedPlayers[player] then
-                    if trackedPlayers[player].gui then trackedPlayers[player].gui:Destroy() end
+                    if trackedPlayers[player].gui then
+                        trackedPlayers[player].gui:Destroy()
+                    end
                     trackedPlayers[player] = nil
                 end
             end
@@ -386,7 +403,9 @@ end
 
 Players.PlayerRemoving:Connect(function(player)
     if trackedPlayers[player] then
-        if trackedPlayers[player].gui then trackedPlayers[player].gui:Destroy() end
+        if trackedPlayers[player].gui then
+            trackedPlayers[player].gui:Destroy()
+        end
         trackedPlayers[player] = nil
     end
 end)
@@ -395,7 +414,9 @@ Players.PlayerAdded:Connect(function(player)
         hideDefaultName(player)
         player.CharacterAdded:Connect(function()
             if trackedPlayers[player] then
-                if trackedPlayers[player].gui then trackedPlayers[player].gui:Destroy() end
+                if trackedPlayers[player].gui then
+                    trackedPlayers[player].gui:Destroy()
+                end
                 trackedPlayers[player] = nil
             end
         end)
@@ -410,7 +431,7 @@ controlGui.Parent = game.CoreGui
 local emojiButton = Instance.new("TextButton")
 emojiButton.Name = "EmojiButton"
 emojiButton.Size = UDim2.new(0, 36, 0, 36)
-emojiButton.Position = UDim2.new(1, -46, 0, 80) -- um pouco mais abaixo
+emojiButton.Position = UDim2.new(1, -46, 0, 80)  -- um pouco mais abaixo
 emojiButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 emojiButton.BackgroundTransparency = 0.2
 emojiButton.BorderSizePixel = 0
@@ -502,7 +523,9 @@ for _, ptName in ipairs(uiNames) do
             btn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
             if ptName == "Jogadores" then
                 for ply, data in pairs(trackedPlayers) do
-                    if data.gui then data.gui:Destroy() end
+                    if data.gui then
+                        data.gui:Destroy()
+                    end
                 end
                 trackedPlayers = {}
             else
@@ -552,14 +575,25 @@ RunService.Heartbeat:Connect(function()
     local character = LocalPlayer.Character
     if not character or not character.PrimaryPart then return end
     local rootPos = character.PrimaryPart.Position
-    -- Itens e NPCs
+
+    -- Atualiza trackedEntries
     for model, entry in pairs(trackedEntries) do
         if entry.type == "Loot" or entry.type == "Bond" then
             if not entry.model.Parent then
-                if entry.label then entry.label:Destroy() end
+                -- Remoção real: AncestryChanged lida com incremento de Bonds se wasNear == true
+                if entry.label then
+                    entry.label:Destroy()
+                end
                 trackedEntries[model] = nil
             else
                 local part = entry.part
+                -- Atualiza flag wasNear se for Bond
+                if entry.type == "Bond" and part and part.Parent then
+                    local dist_for_near = (part.Position - rootPos).Magnitude
+                    if dist_for_near <= 10 then
+                        entry.wasNear = true
+                    end
+                end
                 local dist = (part.Position - rootPos).Magnitude
                 if dist <= MAX_DISTANCE and settings[entry.name] then
                     if not entry.label then
@@ -570,71 +604,80 @@ RunService.Heartbeat:Connect(function()
                         end
                     end
                 else
-                    if entry.label then entry.label:Destroy(); entry.label = nil end
+                    if entry.label then
+                        entry.label:Destroy()
+                        entry.label = nil
+                    end
                 end
             end
         elseif entry.type == "NPC" then
             local humanoid = entry.humanoid
-            local isHorse = isHorseModelName(entry.model.Name)
-            local isUnicorn = (entry.model.Name == "Model_Unicorn" or entry.model.Name == "Unicorn")
-            if not entry.model.Parent or (humanoid and humanoid.Health <= 0 and not isHorse and not isUnicorn) then
-                if entry.label then entry.label:Destroy() end
+            -- Para cavalos, mantém ESP mesmo morto; para outros NPCs, remove quando morto
+            local isHorse = false
+            if entry.model and entry.model.Name then
+                isHorse = isHorseModelName(entry.model.Name) or entry.model.Name == "Model_Unicorn" or entry.model.Name == "Unicorn"
+            end
+            if not entry.model.Parent or (humanoid and humanoid.Health <= 0 and not isHorse) then
+                if entry.label then
+                    entry.label:Destroy()
+                end
                 trackedEntries[model] = nil
             else
                 local part = entry.part
                 local dist = (part.Position - rootPos).Magnitude
                 if dist <= MAX_DISTANCE and settings[entry.name] then
                     if not entry.label then
-                        -- Usar cor apropriada
                         entry.label = createTextLabel(part, entry.name, entry.color)
                     end
                 else
-                    if entry.label then entry.label:Destroy(); entry.label = nil end
+                    if entry.label then
+                        entry.label:Destroy()
+                        entry.label = nil
+                    end
                 end
             end
         end
     end
 
-    -- Jogadores
+    -- Atualiza ESP de jogadores e health
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             local char = player.Character
             if char and char.PrimaryPart then
                 local dist = (char.PrimaryPart.Position - rootPos).Magnitude
                 if dist <= PLAYER_ESP_DISTANCE and settings["Jogadores"] then
-                    local existing = trackedPlayers[player]
-                    -- Se adornee mudou (revive sem CharacterAdded), recria
-                    if existing and existing.lastPart ~= char.PrimaryPart then
-                        if existing.gui then existing.gui:Destroy() end
-                        existing = nil
-                        trackedPlayers[player] = nil
-                    end
-                    if not existing then
+                    if not trackedPlayers[player] then
                         local gui, nameLbl, healthLbl = createPlayerLabel(char.PrimaryPart, player.Name)
-                        trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl, lastPart = char.PrimaryPart }
+                        trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl }
                     end
-                    -- Atualiza health com precisão decimal
-                    local entry = trackedPlayers[player]
-                    if entry and entry.healthLabel then
+                    -- Atualiza health com precisão decimal (ex.: 75.3)
+                    local entryP = trackedPlayers[player]
+                    if entryP and entryP.healthLabel then
                         local hum = char:FindFirstChildWhichIsA("Humanoid")
                         if hum then
-                            entry.healthLabel.Text = string.format("%.1f", hum.Health)
+                            entryP.healthLabel.Text = string.format("%.1f", hum.Health)
                         else
-                            entry.healthLabel.Text = ""
+                            entryP.healthLabel.Text = ""
                         end
                     end
                 else
                     if trackedPlayers[player] then
-                        if trackedPlayers[player].gui then trackedPlayers[player].gui:Destroy() end
+                        if trackedPlayers[player].gui then
+                            trackedPlayers[player].gui:Destroy()
+                        end
                         trackedPlayers[player] = nil
                     end
                 end
             else
                 if trackedPlayers[player] then
-                    if trackedPlayers[player].gui then trackedPlayers[player].gui:Destroy() end
+                    if trackedPlayers[player].gui then
+                        trackedPlayers[player].gui:Destroy()
+                    end
                     trackedPlayers[player] = nil
                 end
             end
         end
     end
 end)
+
+-- ===== FIM DO SCRIPT =====
