@@ -1,6 +1,6 @@
--- Script ESP completo integrado com BondCounterGui fornecido, adicionando NPCs cavalos personalizados,
--- exibindo health de jogadores com precisão e ocultando o nome padrão de Roblox.
--- Ajustado contador de Bonds: só conta se estiver dentro de 10 studs quando o Bond for realmente removido.
+-- Script ESP completo integrado com BondCounterGui e bond tracker aprimorado,
+-- adicionando NPCs cavalos personalizados, health de jogadores com precisão e ocultando nome padrão de Roblox.
+-- Contador de Bonds só incrementa se estiver dentro de 25 studs no momento em que o Bond for removido.
 -- Funciona no executor Delta Mobile para Dead Rails
 
 -- ===== LIMPEZA DE VERSÕES ANTIGAS =====
@@ -17,7 +17,7 @@ for _, inst in ipairs(game.CoreGui:GetDescendants()) do
     end
 end
 
--- ===== VARIÁVEIS GLOBAIS E CONFIGURAÇÕES =====
+-- ===== SERVIÇOS E VARIÁVEIS GLOBAIS =====
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
@@ -51,15 +51,12 @@ local nameMap = {
 }
 
 -- Alcances
-local MAX_DISTANCE = 2000         -- itens/NPCs
-local PLAYER_ESP_DISTANCE = 5000  -- jogadores
+local MAX_DISTANCE = 2000         -- ESP para itens/NPCs
+local PLAYER_ESP_DISTANCE = 5000  -- ESP para jogadores
+local BOND_COUNT_DISTANCE = 25    -- distância máxima para contar bond como coletado
 
 -- Tables de tracking
--- trackedEntries[modelInstance] = {
---     model, part, label, name, type="Bond"/"Loot"/"NPC", humanoid, color,
---     -- apenas para Bonds:
---     wasNear = boolean flag indicando se esteve dentro de 10 studs antes de remoção
--- }
+-- trackedEntries[modelInstance] = { model, part, label, name, type="Bond"/"Loot"/"NPC", humanoid, color }
 local trackedEntries = {}
 -- trackedPlayers[player] = { gui = BillboardGui, nameLabel = TextLabel, healthLabel = TextLabel }
 local trackedPlayers = {}
@@ -117,8 +114,13 @@ local function isHorseModelName(name)
         or name == "Model_PestilenceHorse"
 end
 
+-- Cálculo de distância entre vetores
+local function getDistance(posA, posB)
+    return (posA - posB).Magnitude
+end
+
 -- ===== CRIAÇÃO DE ESP =====
-local function createBondDot(part)
+local function createBondESP(part)
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "ESP_Bond"
     billboard.Adornee = part
@@ -228,17 +230,30 @@ local function tryTrackRuntimeModel(model)
                     type = typ,
                     humanoid = nil,
                     color = nil,
-                    wasNear = false, -- flag para contador de Bonds
                 }
                 if typ == "Bond" then
-                    -- Ao remover, só conta se wasNear == true
+                    -- Quando Bond for removido, conta apenas se estiver dentro de BOND_COUNT_DISTANCE
                     model.AncestryChanged:Connect(function(child, parent)
                         if not model.Parent then
-                            local entry = trackedEntries[model]
-                            if entry and entry.wasNear then
-                                bondsCollected = bondsCollected + 1
-                                counterLabel.Text = "Bonds Pegos: " .. bondsCollected
+                            -- modelo removido: verificar distância antes de contar
+                            local partPos
+                            -- tentar obter posição do part; se part ainda existir:
+                            if part and part.Parent then
+                                partPos = part.Position
+                            else
+                                -- se part foi removido antes, não contamos
+                                partPos = nil
                             end
+                            if partPos and LocalPlayer.Character and LocalPlayer.Character.PrimaryPart then
+                                local playerPos = LocalPlayer.Character.PrimaryPart.Position
+                                local dist = getDistance(partPos, playerPos)
+                                if dist <= BOND_COUNT_DISTANCE then
+                                    bondsCollected = bondsCollected + 1
+                                    counterLabel.Text = "Bonds Pegos: " .. bondsCollected
+                                end
+                            end
+                            -- limpar ESP
+                            local entry = trackedEntries[model]
                             if entry and entry.label then
                                 entry.label:Destroy()
                             end
@@ -288,9 +303,8 @@ local function tryTrackNPCModel(model)
                     type = "NPC",
                     humanoid = humanoid,
                     color = color,
-                    wasNear = false, -- não usado para NPC
                 }
-                -- Para NPCs que não são cavalos, conecte Died para remover ESP quando morrer
+                -- Para NPCs que não são cavalos ou Unicorn genérico, remove ESP quando morrem
                 if humanoid and not (isHorseModelName(name) or name == "Model_Unicorn" or name == "Unicorn") then
                     humanoid.Died:Connect(function()
                         local entry = trackedEntries[model]
@@ -319,7 +333,7 @@ workspace.DescendantAdded:Connect(function(obj)
         tryTrackNPCModel(obj)
     end
 end)
--- Quando modelo some, limpeza
+-- Quando modelo some, limpeza genérica (embora Bond removido tratado via AncestryChanged acima)
 workspace.DescendantRemoving:Connect(function(obj)
     if obj:IsA("Model") and trackedEntries[obj] then
         local entry = trackedEntries[obj]
@@ -331,8 +345,8 @@ workspace.DescendantRemoving:Connect(function(obj)
 end)
 
 -- ===== ESP DE JOGADORES =====
+-- Ocultar nome padrão de Roblox
 local function hideDefaultName(player)
-    -- Oculta nome padrão de Roblox configurando DisplayDistanceType
     local function onCharacterAdded(char)
         local humanoid = char:FindFirstChildWhichIsA("Humanoid")
         if humanoid and humanoid.DisplayDistanceType then
@@ -371,14 +385,13 @@ local function updatePlayerESP()
                         trackedPlayers[player] = { gui = gui, nameLabel = nameLbl, healthLabel = healthLbl }
                     end
                     -- Atualiza health com precisão decimal (ex.: 75.3)
-                    local entry = trackedPlayers[player]
-                    if entry and entry.healthLabel then
+                    local entryP = trackedPlayers[player]
+                    if entryP and entryP.healthLabel then
                         local hum = char:FindFirstChildWhichIsA("Humanoid")
                         if hum then
-                            -- Use Health diretamente, sem arredondar para inteiro
-                            entry.healthLabel.Text = string.format("%.1f", hum.Health)
+                            entryP.healthLabel.Text = string.format("%.1f", hum.Health)
                         else
-                            entry.healthLabel.Text = ""
+                            entryP.healthLabel.Text = ""
                         end
                     end
                 else
@@ -580,43 +593,45 @@ RunService.Heartbeat:Connect(function()
     for model, entry in pairs(trackedEntries) do
         if entry.type == "Loot" or entry.type == "Bond" then
             if not entry.model.Parent then
-                -- Remoção real: AncestryChanged lida com incremento de Bonds se wasNear == true
+                -- Remoção real: AncestryChanged já tratou a contagem de Bonds
                 if entry.label then
                     entry.label:Destroy()
                 end
                 trackedEntries[model] = nil
             else
                 local part = entry.part
-                -- Atualiza flag wasNear se for Bond
-                if entry.type == "Bond" and part and part.Parent then
-                    local dist_for_near = (part.Position - rootPos).Magnitude
-                    if dist_for_near <= 10 then
-                        entry.wasNear = true
-                    end
-                end
                 local dist = (part.Position - rootPos).Magnitude
-                if dist <= MAX_DISTANCE and settings[entry.name] then
-                    if not entry.label then
-                        if entry.type == "Bond" then
-                            entry.label = createBondDot(part)
-                        else
-                            entry.label = createTextLabel(part, entry.name, nil)
+                if entry.type == "Bond" then
+                    -- nenhuma flag adicional: contagem já via AncestryChanged com verificação de distância <=25
+                    -- ESP:
+                    if dist <= MAX_DISTANCE and settings[entry.name] then
+                        if not entry.label then
+                            entry.label = createBondESP(part)
+                        end
+                    else
+                        if entry.label then
+                            entry.label:Destroy()
+                            entry.label = nil
                         end
                     end
                 else
-                    if entry.label then
-                        entry.label:Destroy()
-                        entry.label = nil
+                    -- Loot normal
+                    if dist <= MAX_DISTANCE and settings[entry.name] then
+                        if not entry.label then
+                            entry.label = createTextLabel(part, entry.name, nil)
+                        end
+                    else
+                        if entry.label then
+                            entry.label:Destroy()
+                            entry.label = nil
+                        end
                     end
                 end
             end
         elseif entry.type == "NPC" then
             local humanoid = entry.humanoid
-            -- Para cavalos, mantém ESP mesmo morto; para outros NPCs, remove quando morto
-            local isHorse = false
-            if entry.model and entry.model.Name then
-                isHorse = isHorseModelName(entry.model.Name) or entry.model.Name == "Model_Unicorn" or entry.model.Name == "Unicorn"
-            end
+            local name = entry.model and entry.model.Name or ""
+            local isHorse = isHorseModelName(name) or name == "Model_Unicorn" or name == "Unicórnio" or name == "Unicorn"
             if not entry.model.Parent or (humanoid and humanoid.Health <= 0 and not isHorse) then
                 if entry.label then
                     entry.label:Destroy()
