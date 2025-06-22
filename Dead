@@ -1,11 +1,24 @@
--- Script ESP completo integrado com BondCounterGui e bond tracker aprimorado,
--- adicionando NPCs cavalos personalizados, health de jogadores com precisão e ocultando nome padrão de Roblox.
--- Contador de Bonds só incrementa se estiver dentro de 25 studs no momento em que o Bond for removido.
+-- Script ESP completo integrado com HUD e emoji móvel, sem contador de Bonds
 -- Funciona no executor Delta Mobile para Dead Rails
+-- Recursos:
+--  • Remove GUIs e BillboardGuis anteriores ao iniciar para evitar duplicatas
+--  • ESP Bonds: bolinha roxa, visível até 2000 studs; mas sem contador de coleta
+--  • ESP Loot RuntimeItems: texto flutuante pequeno sem fundo, visível até 2000 studs, um label por modelo
+--  • ESP NPCs (“Unicórnio”, “Unicorn”, “Capitão”, “Banqueiro”, cavalos variados): texto flutuante pequeno acima de HumanoidRootPart enquanto vivos (exceto cavalos que mantêm ESP mesmo mortos), um label por NPC, evitando duplicações; cores específicas
+--  • ESP Jogadores: nome do jogador flutuante e health atual abaixo, com precisão decimal (ex.: “75.3”), visível até 5000 studs, um label por jogador; reaparece ao respawn; oculta nome padrão de Roblox
+--  • HUD: botão emoji 😀 no canto; ao clicar mostra/esconde lista com toggles On/Off, em ScrollingFrame arrastável
+--  • Emoji posicionado um pouco mais abaixo para não conflitar com outras GUIs
+--  • Inclui “Pote de Cérebro”, “Óleo de Serpente” sem duplicação, “Capacete” para Head_Armor, etc.
+--  • Adiciona NPCs cavalos: Model_WarHorse → "Cavalo Fogo" (vermelho), Model_FamineHorse → "Cavalo Raio" (azul), Model_DeathHorse → "Cavalo Vida" (ciano), Model_PestilenceHorse → "Cavalo Zumbi" (verde)
+--  • Rastreia também modelos chamados "Unicorn" além de "Model_Unicorn", com cor púrpura; se você pegar o NPC e soltá-lo, o ESP reaparece mantendo a cor.
 
 -- ===== LIMPEZA DE VERSÕES ANTIGAS =====
 for _, gui in ipairs(game.CoreGui:GetChildren()) do
-    if gui.Name == "ESPControlGui" or gui.Name == "BondCounterGui" then
+    if gui.Name == "ESPControlGui" then
+        gui:Destroy()
+    end
+    -- Remover possíveis GUIs antigas de contador, caso existam
+    if gui.Name == "BondCounterGui" then
         gui:Destroy()
     end
 end
@@ -17,7 +30,7 @@ for _, inst in ipairs(game.CoreGui:GetDescendants()) do
     end
 end
 
--- ===== SERVIÇOS E VARIÁVEIS GLOBAIS =====
+-- ===== VARIÁVEIS GLOBAIS E CONFIGURAÇÕES =====
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
@@ -53,16 +66,12 @@ local nameMap = {
 -- Alcances
 local MAX_DISTANCE = 2000         -- ESP para itens/NPCs
 local PLAYER_ESP_DISTANCE = 5000  -- ESP para jogadores
-local BOND_COUNT_DISTANCE = 25    -- distância máxima para contar bond como coletado
 
 -- Tables de tracking
 -- trackedEntries[modelInstance] = { model, part, label, name, type="Bond"/"Loot"/"NPC", humanoid, color }
 local trackedEntries = {}
 -- trackedPlayers[player] = { gui = BillboardGui, nameLabel = TextLabel, healthLabel = TextLabel }
 local trackedPlayers = {}
-
--- Contador de Bonds coletados
-local bondsCollected = 0
 
 -- Configurações de ESP por nome em português => true/false
 -- Inclui "Jogadores" para ESP de jogadores
@@ -77,22 +86,6 @@ do
     end
     settings["Jogadores"] = true
 end
-
--- ===== BondCounterGui conforme script fornecido =====
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "BondCounterGui"
-screenGui.Parent = game.CoreGui
-
-local counterLabel = Instance.new("TextLabel")
-counterLabel.Size = UDim2.new(0, 150, 0, 30)
-counterLabel.Position = UDim2.new(1, -160, 0, 40) -- um pouco mais abaixo
-counterLabel.BackgroundTransparency = 0.5
-counterLabel.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
-counterLabel.TextColor3 = Color3.new(1, 1, 1)
-counterLabel.TextSize = 14
-counterLabel.Font = Enum.Font.SourceSansBold
-counterLabel.Text = "Bonds Pegos: 0"
-counterLabel.Parent = screenGui
 
 -- ===== FUNÇÕES AUXILIARES =====
 local function findPartForModel(model)
@@ -112,11 +105,6 @@ local function isHorseModelName(name)
         or name == "Model_FamineHorse"
         or name == "Model_DeathHorse"
         or name == "Model_PestilenceHorse"
-end
-
--- Cálculo de distância entre vetores
-local function getDistance(posA, posB)
-    return (posA - posB).Magnitude
 end
 
 -- ===== CRIAÇÃO DE ESP =====
@@ -231,36 +219,7 @@ local function tryTrackRuntimeModel(model)
                     humanoid = nil,
                     color = nil,
                 }
-                if typ == "Bond" then
-                    -- Quando Bond for removido, conta apenas se estiver dentro de BOND_COUNT_DISTANCE
-                    model.AncestryChanged:Connect(function(child, parent)
-                        if not model.Parent then
-                            -- modelo removido: verificar distância antes de contar
-                            local partPos
-                            -- tentar obter posição do part; se part ainda existir:
-                            if part and part.Parent then
-                                partPos = part.Position
-                            else
-                                -- se part foi removido antes, não contamos
-                                partPos = nil
-                            end
-                            if partPos and LocalPlayer.Character and LocalPlayer.Character.PrimaryPart then
-                                local playerPos = LocalPlayer.Character.PrimaryPart.Position
-                                local dist = getDistance(partPos, playerPos)
-                                if dist <= BOND_COUNT_DISTANCE then
-                                    bondsCollected = bondsCollected + 1
-                                    counterLabel.Text = "Bonds Pegos: " .. bondsCollected
-                                end
-                            end
-                            -- limpar ESP
-                            local entry = trackedEntries[model]
-                            if entry and entry.label then
-                                entry.label:Destroy()
-                            end
-                            trackedEntries[model] = nil
-                        end
-                    end)
-                end
+                -- Sem lógica de contagem; apenas ESP visual para Bonds
             end
         end
     end
@@ -333,7 +292,7 @@ workspace.DescendantAdded:Connect(function(obj)
         tryTrackNPCModel(obj)
     end
 end)
--- Quando modelo some, limpeza genérica (embora Bond removido tratado via AncestryChanged acima)
+-- Quando modelo some, limpeza genérica
 workspace.DescendantRemoving:Connect(function(obj)
     if obj:IsA("Model") and trackedEntries[obj] then
         local entry = trackedEntries[obj]
@@ -444,7 +403,7 @@ controlGui.Parent = game.CoreGui
 local emojiButton = Instance.new("TextButton")
 emojiButton.Name = "EmojiButton"
 emojiButton.Size = UDim2.new(0, 36, 0, 36)
-emojiButton.Position = UDim2.new(1, -46, 0, 80)  -- um pouco mais abaixo
+emojiButton.Position = UDim2.new(1, -46, 0, 80)  -- posicionado um pouco mais abaixo
 emojiButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 emojiButton.BackgroundTransparency = 0.2
 emojiButton.BorderSizePixel = 0
@@ -560,11 +519,12 @@ emojiButton.MouseButton1Click:Connect(function()
     hudFrame.Visible = not hudFrame.Visible
 end)
 
+-- Permite arrastar a HUD no mobile
 do
     local dragging = false
     local dragStartPos, frameStartPos
     hudFrame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             dragStartPos = Vector2.new(input.Position.X, input.Position.Y)
             frameStartPos = Vector2.new(hudFrame.Position.X.Offset, hudFrame.Position.Y.Offset)
@@ -576,8 +536,9 @@ do
         end
     end)
     hudFrame.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStartPos
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local currentPos = input.Position
+            local delta = currentPos - dragStartPos
             hudFrame.Position = UDim2.new(0, frameStartPos.X + delta.X, 0, frameStartPos.Y + delta.Y)
         end
     end)
@@ -593,7 +554,6 @@ RunService.Heartbeat:Connect(function()
     for model, entry in pairs(trackedEntries) do
         if entry.type == "Loot" or entry.type == "Bond" then
             if not entry.model.Parent then
-                -- Remoção real: AncestryChanged já tratou a contagem de Bonds
                 if entry.label then
                     entry.label:Destroy()
                 end
@@ -601,30 +561,18 @@ RunService.Heartbeat:Connect(function()
             else
                 local part = entry.part
                 local dist = (part.Position - rootPos).Magnitude
-                if entry.type == "Bond" then
-                    -- nenhuma flag adicional: contagem já via AncestryChanged com verificação de distância <=25
-                    -- ESP:
-                    if dist <= MAX_DISTANCE and settings[entry.name] then
-                        if not entry.label then
+                if dist <= MAX_DISTANCE and settings[entry.name] then
+                    if not entry.label then
+                        if entry.type == "Bond" then
                             entry.label = createBondESP(part)
-                        end
-                    else
-                        if entry.label then
-                            entry.label:Destroy()
-                            entry.label = nil
+                        else
+                            entry.label = createTextLabel(part, entry.name, nil)
                         end
                     end
                 else
-                    -- Loot normal
-                    if dist <= MAX_DISTANCE and settings[entry.name] then
-                        if not entry.label then
-                            entry.label = createTextLabel(part, entry.name, nil)
-                        end
-                    else
-                        if entry.label then
-                            entry.label:Destroy()
-                            entry.label = nil
-                        end
+                    if entry.label then
+                        entry.label:Destroy()
+                        entry.label = nil
                     end
                 end
             end
